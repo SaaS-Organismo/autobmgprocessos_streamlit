@@ -1,6 +1,7 @@
 import streamlit as st
 import boto3
 from cryptography.fernet import Fernet
+import io
 
 # Initialize the S3 client
 s3_client = boto3.client('s3')
@@ -22,13 +23,18 @@ def upload_to_s3(file, object_key):
         return False
 
 def run():
-    st.title("User Registration Form")
+    st.title("AutoBMG Processos")
+    st.markdown("Baixe a planilha de exemplo abaixo e preencha com seus dados. Preencha suas credenciais de acesso do sistema BMG, anexe o arquivo e clique em 'Enviar'.")
+    st.download_button(
+            "Baixar Planilha",
+            data=open("./Template AutoBMG.xlsx", "rb").read(), mime="application/octet-stream", file_name="Template AutoBMG.xlsx"
+        )
     with st.form(key='registration_form'):
-        login = st.text_input("Login", placeholder="Enter your login")
-        password = st.text_input("Password", type="password", placeholder="Enter your password")
-        excel_file = st.file_uploader("Upload Excel File", type=["xls", "xlsx"])
-
-        submit_button = st.form_submit_button(label='Submit')
+        login = st.text_input("Login", placeholder="Digite o seu login do sistema do BMG")
+        password = st.text_input("Senha", type="password", placeholder="Digite sua senha do sistema do BMG")
+        #st.markdown(f'Baixe e preencha a planilha de <a href="https://docs.google.com/spreadsheets/d/1pWRFz9UeFveDPXpiU2T_2zwFYQqOIbUPfBP9JBlBZgg/edit?usp=sharing" target="_blank">exemplo</a> com seus dados. Anexe o arquivo no local abaixo.',  unsafe_allow_html=True)
+        excel_file = st.file_uploader("Planilha", type=["xls", "xlsx"])
+        submit_button = st.form_submit_button(label='Enviar')
 
         if submit_button:
             if login and excel_file:
