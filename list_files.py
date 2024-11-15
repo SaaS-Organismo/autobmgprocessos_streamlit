@@ -53,7 +53,11 @@ def run():
                 print(files_to_display)
 
                 # Create a DataFrame to display the files with clickable links
-                files_to_display = [{**file, "link": f'<a href="https://{S3_BUCKET_NAME}.s3.amazonaws.com/{file.get('link')}" target="_blank">Link</a>'} for file in files_to_display]
+                files_to_display = [
+                    {**file,
+                     "link": f"<a href=\"https://{S3_BUCKET_NAME}.s3.amazonaws.com/{file.get('link')}\" target=\"_blank\">Link</a>"}
+                    for file in files_to_display
+                ]
                 df = pd.DataFrame(files_to_display, columns=["name", "link"])
 
                 # Use st.markdown to render HTML with links
