@@ -27,6 +27,10 @@ def invoke_lambda_async(event_payload):
 
 
 def run():
+    if not st.session_state.authenticated:
+        st.warning("Você precisa estar autenticado para acessar esta página.")
+        st.stop()
+
     st.title("AutoBMG Processos")
     st.markdown("Preencha seu email, suas credenciais de acesso do sistema do BMG, digite o código do processo e clique em 'Enviar'.")
     with st.form(key='registration_form'):

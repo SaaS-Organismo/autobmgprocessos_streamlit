@@ -27,6 +27,10 @@ def list_files(login):
         return []
 
 def run():
+    if not st.session_state.authenticated:
+        st.warning("Você precisa estar autenticado para acessar esta página.")
+        st.stop()
+
     st.title("List Files in S3")
     login = st.text_input("Email to List Files", placeholder="Enter your login")
 
