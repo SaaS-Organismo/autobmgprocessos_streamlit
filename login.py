@@ -1,5 +1,5 @@
-from decouple import config
 import streamlit as st
+from decouple import config
 
 # Carregar credenciais do .env
 LOGIN = config("LOGIN")

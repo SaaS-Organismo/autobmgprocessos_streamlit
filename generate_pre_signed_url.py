@@ -1,12 +1,11 @@
 import os
 import tempfile
 import zipfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+
 import boto3
 from decouple import config
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
-import time
 
 AWS_S3_BUCKET_NAME = config("AWS_S3_BUCKET_NAME")
 
@@ -20,10 +19,7 @@ def download_file(s3_client, bucket_name, file_key, download_dir):
     return temp_file_path
 
 
-
 def zip_s3_bucket_contents(case_id):
-    #time.sleep(3)
-    #return "", None
     """
     Zips all files in an S3 bucket folder documents/downloads/{case_id} and returns a pre-signed URL for download
     """
@@ -37,7 +33,9 @@ def zip_s3_bucket_contents(case_id):
 
         # Create a temporary directory
         with tempfile.TemporaryDirectory() as temp_dir:
-            zip_filename = f'case_{case_id}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.zip'
+            zip_filename = (
+                f'case_{case_id}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.zip'
+            )
             zip_path = os.path.join(temp_dir, zip_filename)
 
             # List all objects in the bucket with the specific prefix
@@ -51,7 +49,9 @@ def zip_s3_bucket_contents(case_id):
 
             # Filter files (ignore directories)
             file_keys = [
-                obj["Key"] for obj in objects["Contents"] if not obj["Key"].endswith("/")
+                obj["Key"]
+                for obj in objects["Contents"]
+                if not obj["Key"].endswith("/")
             ]
             total_files = len(file_keys)
 
@@ -62,7 +62,9 @@ def zip_s3_bucket_contents(case_id):
             downloaded_files = []
             with ThreadPoolExecutor(max_workers=10) as executor:
                 futures = [
-                    executor.submit(download_file, s3_client, AWS_S3_BUCKET_NAME, file_key, temp_dir)
+                    executor.submit(
+                        download_file, s3_client, AWS_S3_BUCKET_NAME, file_key, temp_dir
+                    )
                     for file_key in file_keys
                 ]
 
@@ -113,4 +115,3 @@ def zip_s3_bucket_contents(case_id):
     except Exception as e:
         print(e)
         return None, str(e)
-

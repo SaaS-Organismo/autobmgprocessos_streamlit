@@ -1,15 +1,13 @@
-import streamlit as st
-import boto3
-from botocore.config import Config
-from uuid import uuid4
-from decouple import config
-import json
-import time
-from generate_pre_signed_url import zip_s3_bucket_contents
-import webbrowser
 import json
 
-boto_config = Config(read_timeout=900, connect_timeout=900, retries={'max_attempts': 0}) 
+import boto3
+import streamlit as st
+from botocore.config import Config
+from decouple import config
+
+from generate_pre_signed_url import zip_s3_bucket_contents
+
+boto_config = Config(read_timeout=900, connect_timeout=900, retries={"max_attempts": 0})
 
 lambda_client = boto3.client(
     "lambda",
@@ -64,22 +62,28 @@ def run():
     alert_temporary_message = st.empty()
     if "submit_button" in st.session_state and st.session_state.submit_button == True:
         st.session_state.running = True
-        
 
     if "processed" in st.session_state and st.session_state.processed == True:
         info_temporary_message.info(
-                "Estamos processando os documentos e isso pode demorar um pouco. Aguarde na página!"
-            )
+            "Estamos processando os documentos e isso pode demorar um pouco. Aguarde na página!"
+        )
         download_url, error = zip_s3_bucket_contents(process_code)
         if not error:
-            alert_temporary_message.success("Arquivos processados com sucesso! Clique no botão para baixá-los")
-            col2.link_button(url=download_url, label="Baixar arquivos", disabled=st.session_state.running)
+            alert_temporary_message.success(
+                "Arquivos processados com sucesso! Clique no botão para baixá-los"
+            )
+            col2.link_button(
+                url=download_url,
+                label="Baixar arquivos",
+                disabled=st.session_state.running,
+            )
             st.session_state.running = False
         else:
-            alert_temporary_message.error(f"Erro ao processar os documentos. Tente novamente!")
+            alert_temporary_message.error(
+                f"Erro ao processar os documentos. Tente novamente!"
+            )
         info_temporary_message.empty()
         st.session_state.processed = False
-        
 
     if col1.button(
         label="Enviar", disabled=st.session_state.running, key="submit_button"
@@ -99,7 +103,9 @@ def run():
             if response_body["statusCode"] == 200:
                 st.session_state.processed = True
             else:
-                alert_temporary_message.warning("Houve um erro ao submeter os dados. Tente novamente.")
+                alert_temporary_message.warning(
+                    "Houve um erro ao submeter os dados. Tente novamente."
+                )
                 info_temporary_message.empty()
                 st.session_state.processed = False
             st.session_state.running = False

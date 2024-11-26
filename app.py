@@ -1,9 +1,10 @@
 import streamlit as st
 
+import list_files
+
 # Import pages
 import login
 import upload_form
-import list_files
 
 # Gerenciar estado de autenticação
 if "authenticated" not in st.session_state:
@@ -25,4 +26,3 @@ else:
 
 with st.spinner(f"Loading  ..."):
     page.run()
-
