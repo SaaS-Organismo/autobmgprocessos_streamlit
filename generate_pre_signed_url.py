@@ -1,15 +1,24 @@
-import json
 import os
 import tempfile
-import webbrowser
 import zipfile
 from datetime import datetime
 import boto3
 from decouple import config
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import time
 
 AWS_S3_BUCKET_NAME = config("AWS_S3_BUCKET_NAME")
+
+
+def download_file(s3_client, bucket_name, file_key, download_dir):
+    """
+    Downloads a single file from S3 to the specified directory.
+    """
+    temp_file_path = os.path.join(download_dir, os.path.basename(file_key))
+    s3_client.download_file(bucket_name, file_key, temp_file_path)
+    return temp_file_path
+
 
 
 def zip_s3_bucket_contents(case_id):
@@ -28,9 +37,7 @@ def zip_s3_bucket_contents(case_id):
 
         # Create a temporary directory
         with tempfile.TemporaryDirectory() as temp_dir:
-            zip_filename = (
-                f'case_{case_id}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.zip'
-            )
+            zip_filename = f'case_{case_id}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.zip'
             zip_path = os.path.join(temp_dir, zip_filename)
 
             # List all objects in the bucket with the specific prefix
@@ -42,27 +49,36 @@ def zip_s3_bucket_contents(case_id):
             if "Contents" not in objects:
                 return None, f"No files found for case ID {case_id}"
 
-            total_files = len(objects["Contents"])
+            # Filter files (ignore directories)
+            file_keys = [
+                obj["Key"] for obj in objects["Contents"] if not obj["Key"].endswith("/")
+            ]
+            total_files = len(file_keys)
 
-            # Download and zip all files
+            if total_files == 0:
+                return None, f"No valid files found for case ID {case_id}"
+
+            # Multi-threaded file download
+            downloaded_files = []
+            with ThreadPoolExecutor(max_workers=10) as executor:
+                futures = [
+                    executor.submit(download_file, s3_client, AWS_S3_BUCKET_NAME, file_key, temp_dir)
+                    for file_key in file_keys
+                ]
+
+                for future in as_completed(futures):
+                    try:
+                        downloaded_files.append(future.result())
+                    except Exception as e:
+                        print(f"Error downloading file: {e}")
+
+            # Create a ZIP file with downloaded files
             with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
-                for idx, obj in enumerate(objects.get("Contents", []), 1):
-                    file_key = obj["Key"]
-                    if not file_key.endswith("/"):
-                        # Download file to temporary location
-                        temp_file_path = os.path.join(
-                            temp_dir, os.path.basename(file_key)
-                        )
-                        s3_client.download_file(AWS_S3_BUCKET_NAME, file_key, temp_file_path)
+                for file_path in downloaded_files:
+                    zipf.write(file_path, os.path.basename(file_path))
+                    os.remove(file_path)  # Clean up temporary file
 
-                        # Add to zip file
-                        zipf.write(temp_file_path, os.path.basename(file_key))
-
-                        # Remove temporary file
-                        os.remove(temp_file_path)
-
-
-            # Upload zip file to S3 in a separate zip folder
+            # Upload the ZIP file to S3
             zip_key = f"documents/downloads/zips/{case_id}/{zip_filename}"
             s3_client.upload_file(zip_path, AWS_S3_BUCKET_NAME, zip_key)
 

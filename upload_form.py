@@ -24,8 +24,8 @@ AWS_LAMBDA_NAME = config("AWS_LAMBDA_NAME")
 
 
 def invoke_lambda(event_payload):
-    #time.sleep(3)
-    #return {"statusCode": 200}
+    # time.sleep(3)
+    # return {"statusCode": 200}
     try:
         response = lambda_client.invoke(
             FunctionName=AWS_LAMBDA_NAME,
