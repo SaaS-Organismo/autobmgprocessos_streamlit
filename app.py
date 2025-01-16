@@ -1,12 +1,10 @@
 import streamlit as st
 
 import list_files
-
-# Import pages
 import login
 import upload_form
 
-# Gerenciar estado de autenticação
+# Initialize the session state variable at the very beginning.
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 

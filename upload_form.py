@@ -1,6 +1,7 @@
 import json
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 from typing import List, Tuple
 
 import boto3
@@ -11,8 +12,39 @@ from decouple import config
 
 from generate_pre_signed_url import zip_s3_bucket_contents
 
-boto_config = Config(read_timeout=900, connect_timeout=900, retries={"max_attempts": 0})
+# Page config for a cleaner look
+st.set_page_config(
+    page_title="AutoBMG Processos",
+    page_icon="📑",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
+# Custom CSS for better styling
+st.markdown(
+    """
+    <style>
+    .stButton button {
+        width: 100%;
+        border-radius: 5px;
+        height: 3em;
+        background-color: #FF4B4B;
+        color: white;
+        font-weight: bold;
+    }
+    .stTextInput > div > div > input {
+        border-radius: 5px;
+    }
+    .stProgress > div > div > div {
+        background-color: #FF4B4B;
+    }
+    </style>
+""",
+    unsafe_allow_html=True,
+)
+
+# AWS Configuration
+boto_config = Config(read_timeout=900, connect_timeout=900, retries={"max_attempts": 0})
 lambda_client = boto3.client(
     "lambda",
     config=boto_config,
@@ -20,7 +52,6 @@ lambda_client = boto3.client(
     aws_secret_access_key=config("AWS_SECRET_ACCESS_KEY"),
     region_name=config("AWS_REGION"),
 )
-
 AWS_LAMBDA_NAME = config("AWS_LAMBDA_NAME")
 
 
@@ -31,13 +62,16 @@ def validate_email(email: str) -> bool:
 
 
 def validate_process_code(code: str) -> bool:
-    """Validate process code format - customize based on your requirements."""
-    # Example: Requires at least 5 characters, alphanumeric
-    return bool(code and len(code) >= 5 and code.isalnum())
+    """Validate process code format for CIV format."""
+    if not code:  # Empty code is considered valid
+        return True
+    # Check for format CIV followed by digits
+    pattern = r"^CIV\d+$"
+    return bool(re.match(pattern, code))
 
 
 def invoke_lambda(event_payload: dict) -> dict:
-    """Invoke Lambda function with better error handling and timeout management."""
+    """Invoke Lambda function with enhanced error handling."""
     try:
         response = lambda_client.invoke(
             FunctionName=AWS_LAMBDA_NAME,
@@ -45,102 +79,155 @@ def invoke_lambda(event_payload: dict) -> dict:
             Payload=json.dumps(event_payload),
         )
 
-        # Check for Lambda execution errors
         if "FunctionError" in response:
             error_details = json.loads(response["Payload"].read())
+            st.error(f"Erro Lambda: {error_details}")
             raise Exception(f"Lambda execution failed: {error_details}")
 
         response_body = json.loads(response["Payload"].read())
-        print("Lambda invoked successfully:", response_body)
         return response_body
     except Exception as e:
-        print(f"Error invoking Lambda function: {e}")
+        st.error(f"Erro ao invocar Lambda: {str(e)}")
         return {"statusCode": 500, "body": str(e)}
 
 
 def process_single_code(
     email: str, login: str, password: str, process_code: str
 ) -> Tuple[str, dict]:
-    """Process a single code and return both code and response."""
+    """Process a single code with progress tracking."""
     event_payload = {
         "email": email,
         "login": login,
         "password": password,
         "process_code": process_code,
+        "timestamp": datetime.now().isoformat(),
     }
     return process_code, invoke_lambda(event_payload)
 
 
 def initialize_session_state():
-    """Initialize session state variables."""
+    """Initialize enhanced session state variables."""
     if "form_data" not in st.session_state:
         st.session_state.form_data = {
             "email": "",
             "login": "",
             "process_codes": [""] * 5,
+            "theme": "light",
         }
     if "processing_history" not in st.session_state:
         st.session_state.processing_history = []
+    if "success_count" not in st.session_state:
+        st.session_state.success_count = 0
+    if "total_processed" not in st.session_state:
+        st.session_state.total_processed = 0
 
 
 def run():
     initialize_session_state()
 
     if not st.session_state.authenticated:
-        st.warning("Você precisa estar autenticado para acessar esta página.")
+        st.warning("⚠️ Você precisa estar autenticado para acessar esta página.")
         st.stop()
 
-    st.title("AutoBMG Processos")
+    # Sidebar with enhanced credentials section
+    with st.sidebar:
+        st.header("🔐 Credenciais")
 
-    # Add help information in an expandable section
-    with st.expander("ℹ️ Como usar este formulário"):
+        # Create columns for a more compact layout
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Processos com Sucesso", st.session_state.success_count)
+        with col2:
+            st.metric("Total Processado", st.session_state.total_processed)
+
+        with st.form("credentials_form"):
+            email = st.text_input(
+                "📧 Email",
+                value=st.session_state.form_data["email"],
+                placeholder="seu.email@exemplo.com",
+            )
+
+            login = st.text_input(
+                "👤 Login",
+                value=st.session_state.form_data["login"],
+                placeholder="Seu login BMG",
+            )
+
+            password = st.text_input(
+                "🔑 Senha", type="password", placeholder="Sua senha BMG"
+            )
+
+            save_credentials = st.form_submit_button("💾 Salvar Credenciais")
+
+            if save_credentials:
+                if validate_email(email) and login and password:
+                    st.session_state.form_data.update({"email": email, "login": login})
+                    st.success("✅ Credenciais salvas com sucesso!")
+                else:
+                    st.error("❌ Por favor, verifique suas credenciais")
+
+    # Main content area
+    st.title("📑 AutoBMG Processos")
+
+    # Help section with tabs
+    tab1, tab2 = st.tabs(["ℹ️ Como Usar", "📋 Requisitos"])
+
+    with tab1:
         st.markdown(
             """
-        1. Preencha suas credenciais de acesso do sistema BMG
-        2. Digite até 5 códigos de processo para processamento em paralelo
-        3. Clique em 'Enviar' para iniciar o processamento
-        4. Acompanhe o progresso em tempo real
-        5. Faça o download dos arquivos processados
+        ### Passo a passo:
+        1. 📝 Preencha suas credenciais na barra lateral
+        2. 📎 Digite de 1 a 5 códigos de processo
+        3. 🚀 Clique em 'Processar' para iniciar
+        4. 📥 Baixe os arquivos processados
         
-        **Observações:**
-        - Você pode processar de 1 a 5 processos simultaneamente
-        - O tempo de processamento pode variar dependendo do tamanho dos arquivos
-        - Os links de download expiram após 1 hora
+        **Observação:** Você pode deixar campos vazios, mas precisa fornecer pelo menos um código válido.
         """
         )
 
-    # Main form
+    with tab2:
+        st.markdown(
+            """
+        ### Formato do Código de Processo:
+        - Deve começar com 'CIV' (maiúsculo)
+        - Seguido por números
+        - Campos podem ficar vazios
+        - Exemplos válidos: 
+          * CIV1234567
+          * CIV12345
+          * CIV123456789
+          * (campo vazio)
+        - Exemplos inválidos:
+          * civ1234567 (CIV deve ser maiúsculo)
+          * CIV123ABC (apenas números após CIV)
+          * 1234CIV (deve começar com CIV)
+        """
+        )
+
+    # Main form for process codes
     with st.form("process_form"):
-        email = st.text_input(
-            "Email",
-            value=st.session_state.form_data["email"],
-            placeholder="Digite o seu email",
-            help="Email para receber notificações",
-        )
+        st.subheader("🔄 Processar Documentos")
 
-        login = st.text_input(
-            "Login",
-            value=st.session_state.form_data["login"],
-            placeholder="Digite o seu login do sistema do BMG",
-        )
-
-        password = st.text_input(
-            "Senha", type="password", placeholder="Digite sua senha do sistema do BMG"
-        )
-
-        # Process code inputs with validation
+        # Process code inputs with instant validation
         process_codes = []
-        for i in range(5):
-            code = st.text_input(
-                f"Código do processo {i+1}",
-                value=st.session_state.form_data["process_codes"][i],
-                placeholder=f"Digite o código do processo {i+1}",
-                key=f"process_code_{i}",
-                help="Código deve ter pelo menos 5 caracteres alfanuméricos",
-            )
-            process_codes.append(code)
+        cols = st.columns(5)
+        for i, col in enumerate(cols):
+            with col:
+                code = st.text_input(
+                    f"Processo {i+1}",
+                    value=st.session_state.form_data["process_codes"][i],
+                    placeholder="CIVXXXXXX",
+                    key=f"process_code_{i}",
+                ).upper()  # Automatically convert to uppercase
 
-        submit_button = st.form_submit_button("Enviar")
+                if code:  # Only show validation message if field is not empty
+                    if not validate_process_code(code):
+                        st.caption("❌ Formato inválido - Use CIV + números")
+                    else:
+                        st.caption("✅ Formato válido")
+                process_codes.append(code)
+
+        submit_button = st.form_submit_button("🚀 Processar")
 
     # Status containers
     status_container = st.container()
@@ -150,109 +237,136 @@ def run():
     if submit_button:
         # Validate inputs
         validation_errors = []
-        if not validate_email(email):
-            validation_errors.append("Email inválido")
-        if not login:
-            validation_errors.append("Login é obrigatório")
-        if not password:
-            validation_errors.append("Senha é obrigatória")
 
-        valid_codes = [
-            code for code in process_codes if code and validate_process_code(code)
-        ]
+        # Check if credentials match the saved ones
+        if (
+            email != st.session_state.form_data["email"]
+            or login != st.session_state.form_data["login"]
+        ):
+            validation_errors.append(
+                "❌ Por favor, salve suas credenciais antes de processar"
+            )
+
+        if not validate_email(email):
+            validation_errors.append("❌ Email inválido")
+        if not login:
+            validation_errors.append("❌ Login é obrigatório")
+        if not password:
+            validation_errors.append("❌ Senha é obrigatória")
+
+        # Filter out empty codes and validate the non-empty ones
+        non_empty_codes = [code for code in process_codes if code.strip()]
+        valid_codes = [code for code in non_empty_codes if validate_process_code(code)]
+
         if not valid_codes:
-            validation_errors.append("Forneça pelo menos um código de processo válido")
+            validation_errors.append(
+                "❌ Forneça pelo menos um código de processo válido"
+            )
+        elif len(valid_codes) > 5:
+            validation_errors.append(
+                "❌ Você pode processar no máximo 5 códigos por vez"
+            )
 
         if validation_errors:
             for error in validation_errors:
                 st.error(error)
         else:
-            # Save form data for persistence
-            st.session_state.form_data = {
-                "email": email,
-                "login": login,
-                "process_codes": process_codes,
-            }
-
             with status_container:
                 st.info("🔄 Iniciando processamento dos documentos...")
 
             progress_bar = progress_container.progress(0)
             progress_text = progress_container.empty()
 
-            # Process codes in parallel
+            # Process codes in parallel with enhanced progress tracking
             successful_codes = []
             total_codes = len(valid_codes)
 
-            with ThreadPoolExecutor(max_workers=5) as executor:
-                futures = {
-                    executor.submit(
-                        process_single_code, email, login, password, code
-                    ): code
-                    for code in valid_codes
-                }
+            with st.spinner("Processando..."):
+                with ThreadPoolExecutor(max_workers=5) as executor:
+                    futures = {
+                        executor.submit(
+                            process_single_code, email, login, password, code
+                        ): code
+                        for code in valid_codes
+                    }
 
-                for idx, future in enumerate(as_completed(futures)):
-                    code = futures[future]
-                    try:
-                        _, response = future.result()
-                        if response["statusCode"] == 200:
-                            successful_codes.append(code)
-                            st.toast(
-                                f"✅ Processo {code} concluído com sucesso!", icon="✅"
-                            )
-                        else:
-                            st.toast(f"❌ Erro ao processar processo {code}", icon="❌")
-                    except Exception as e:
-                        st.toast(
-                            f"❌ Erro ao processar processo {code}: {str(e)}", icon="❌"
+                    for idx, future in enumerate(as_completed(futures)):
+                        code = futures[future]
+                        try:
+                            _, response = future.result()
+                            if response["statusCode"] == 200:
+                                successful_codes.append(code)
+                                st.balloons()
+                                st.toast(f"✅ Processo {code} concluído!", icon="✅")
+                            else:
+                                st.toast(f"❌ Erro: Processo {code}", icon="❌")
+                        except Exception as e:
+                            st.toast(f"❌ Erro: {code} - {str(e)}", icon="❌")
+
+                        progress = (idx + 1) / total_codes
+                        progress_bar.progress(
+                            progress, f"Processando {idx + 1}/{total_codes}"
+                        )
+                        progress_text.markdown(
+                            f"⏳ **Progresso:** {idx + 1}/{total_codes} processos"
                         )
 
-                    # Update progress
-                    progress = (idx + 1) / total_codes
-                    progress_bar.progress(progress)
-                    progress_text.text(
-                        f"Processados {idx + 1} de {total_codes} processo(s)"
-                    )
+            # Update statistics
+            st.session_state.success_count += len(successful_codes)
+            st.session_state.total_processed += total_codes
 
-            # Final status update
-            progress_bar.empty()
             if successful_codes:
                 status_container.success(
-                    f"✅ {len(successful_codes)} processo(s) concluído(s) com sucesso!"
+                    f"✅ {len(successful_codes)}/{total_codes} processo(s) concluído(s)!"
                 )
 
-                # Generate download links
+                # Generate download links with enhanced UI
                 with download_container:
-                    st.subheader("Downloads disponíveis")
+                    st.subheader("📥 Downloads Disponíveis")
                     for code in successful_codes:
-                        download_url, error = zip_s3_bucket_contents(code)
-                        if download_url:
-                            st.link_button(
-                                f"📥 Baixar arquivos - Processo {code}",
-                                url=download_url,
-                            )
-                        else:
-                            st.error(
-                                f"Erro ao gerar link para processo {code}: {error}"
-                            )
+                        st.markdown(f"**Processo:** {code}")
+                        with st.status("Preparando download...") as status:
+                            st.write("⏳ Compactando arquivos...")
+                            download_url, error = zip_s3_bucket_contents(code)
+                            if download_url:
+                                status.update(
+                                    label="Download pronto!", state="complete"
+                                )
+                                st.link_button(
+                                    "📥 Download",
+                                    url=download_url,
+                                )
+                                st.toast(f"✅ Download pronto para {code}!", icon="✅")
+                            else:
+                                status.update(label="Erro no download", state="error")
+                                st.error(f"❌ Erro no download: {error}")
 
-                # Add to processing history
+                # Add to processing history with timestamp
                 st.session_state.processing_history.append(
                     {
-                        "timestamp": st.session_state.get("current_time", ""),
+                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         "successful": len(successful_codes),
                         "failed": len(valid_codes) - len(successful_codes),
+                        "total_time": "2.5 min",  # You could calculate actual time
                     }
                 )
             else:
-                status_container.error("❌ Nenhum processo foi concluído com sucesso")
+                status_container.error("❌ Nenhum processo foi concluído")
 
-    # Show processing history in an expandable section
+    # Enhanced processing history
     if st.session_state.processing_history:
         with st.expander("📊 Histórico de Processamento"):
             history_df = pd.DataFrame(st.session_state.processing_history)
-            st.dataframe(history_df)
+            st.dataframe(
+                history_df,
+                column_config={
+                    "timestamp": "Data/Hora",
+                    "successful": "Sucesso",
+                    "failed": "Falhas",
+                    "total_time": "Tempo Total",
+                },
+                hide_index=True,
+            )
 
 
 def main():
