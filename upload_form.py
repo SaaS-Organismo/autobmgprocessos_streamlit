@@ -1,7 +1,10 @@
 import json
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import List, Tuple
 
 import boto3
+import pandas as pd
 import streamlit as st
 from botocore.config import Config
 from decouple import config
@@ -21,146 +24,240 @@ lambda_client = boto3.client(
 AWS_LAMBDA_NAME = config("AWS_LAMBDA_NAME")
 
 
-def invoke_lambda(event_payload):
+def validate_email(email: str) -> bool:
+    """Validate email format."""
+    pattern = r"^[\w\.-]+@[\w\.-]+\.\w+$"
+    return bool(re.match(pattern, email))
+
+
+def validate_process_code(code: str) -> bool:
+    """Validate process code format - customize based on your requirements."""
+    # Example: Requires at least 5 characters, alphanumeric
+    return bool(code and len(code) >= 5 and code.isalnum())
+
+
+def invoke_lambda(event_payload: dict) -> dict:
+    """Invoke Lambda function with better error handling and timeout management."""
     try:
         response = lambda_client.invoke(
             FunctionName=AWS_LAMBDA_NAME,
             InvocationType="RequestResponse",
             Payload=json.dumps(event_payload),
         )
+
+        # Check for Lambda execution errors
+        if "FunctionError" in response:
+            error_details = json.loads(response["Payload"].read())
+            raise Exception(f"Lambda execution failed: {error_details}")
+
         response_body = json.loads(response["Payload"].read())
         print("Lambda invoked successfully:", response_body)
         return response_body
     except Exception as e:
         print(f"Error invoking Lambda function: {e}")
-        return None
+        return {"statusCode": 500, "body": str(e)}
 
 
-def process_single_code(email, login, password, process_code):
+def process_single_code(
+    email: str, login: str, password: str, process_code: str
+) -> Tuple[str, dict]:
+    """Process a single code and return both code and response."""
     event_payload = {
         "email": email,
         "login": login,
         "password": password,
         "process_code": process_code,
     }
-    return invoke_lambda(event_payload)
+    return process_code, invoke_lambda(event_payload)
+
+
+def initialize_session_state():
+    """Initialize session state variables."""
+    if "form_data" not in st.session_state:
+        st.session_state.form_data = {
+            "email": "",
+            "login": "",
+            "process_codes": [""] * 5,
+        }
+    if "processing_history" not in st.session_state:
+        st.session_state.processing_history = []
 
 
 def run():
-    st.session_state.running = False
+    initialize_session_state()
 
     if not st.session_state.authenticated:
         st.warning("Você precisa estar autenticado para acessar esta página.")
         st.stop()
 
     st.title("AutoBMG Processos")
-    st.markdown(
-        "Preencha suas credenciais de acesso do sistema do BMG, digite os códigos dos processos e clique em 'Enviar'."
-    )
 
-    # Credentials inputs
-    email = st.text_input("Email", placeholder="Digite o seu email")
-    login = st.text_input("Login", placeholder="Digite o seu login do sistema do BMG")
-    password = st.text_input(
-        "Senha", type="password", placeholder="Digite sua senha do sistema do BMG"
-    )
-
-    # Create 5 process code inputs
-    process_codes = []
-    for i in range(5):
-        code = st.text_input(
-            f"Código do processo {i+1}",
-            placeholder=f"Digite o código do processo {i+1}",
-            key=f"process_code_{i}",
-        )
-        process_codes.append(code)
-
-    col1, col2 = st.columns([1, 8])
-    info_temporary_message = st.empty()
-    alert_temporary_message = st.empty()
-
-    if "submit_button" in st.session_state and st.session_state.submit_button == True:
-        st.session_state.running = True
-
-    if "processed_codes" in st.session_state and st.session_state.processed_codes:
-        info_temporary_message.info(
-            "Estamos processando os documentos e isso pode demorar um pouco. Aguarde na página!"
+    # Add help information in an expandable section
+    with st.expander("ℹ️ Como usar este formulário"):
+        st.markdown(
+            """
+        1. Preencha suas credenciais de acesso do sistema BMG
+        2. Digite até 5 códigos de processo para processamento em paralelo
+        3. Clique em 'Enviar' para iniciar o processamento
+        4. Acompanhe o progresso em tempo real
+        5. Faça o download dos arquivos processados
+        
+        **Observações:**
+        - Você pode processar de 1 a 5 processos simultaneamente
+        - O tempo de processamento pode variar dependendo do tamanho dos arquivos
+        - Os links de download expiram após 1 hora
+        """
         )
 
-        # Process each successful code
-        download_buttons = []
-        for process_code in st.session_state.processed_codes:
-            download_url, error = zip_s3_bucket_contents(process_code)
-            if not error:
-                download_buttons.append((process_code, download_url))
+    # Main form
+    with st.form("process_form"):
+        email = st.text_input(
+            "Email",
+            value=st.session_state.form_data["email"],
+            placeholder="Digite o seu email",
+            help="Email para receber notificações",
+        )
 
-        if download_buttons:
-            alert_temporary_message.success(
-                "Arquivos processados com sucesso! Clique nos botões para baixá-los"
+        login = st.text_input(
+            "Login",
+            value=st.session_state.form_data["login"],
+            placeholder="Digite o seu login do sistema do BMG",
+        )
+
+        password = st.text_input(
+            "Senha", type="password", placeholder="Digite sua senha do sistema do BMG"
+        )
+
+        # Process code inputs with validation
+        process_codes = []
+        for i in range(5):
+            code = st.text_input(
+                f"Código do processo {i+1}",
+                value=st.session_state.form_data["process_codes"][i],
+                placeholder=f"Digite o código do processo {i+1}",
+                key=f"process_code_{i}",
+                help="Código deve ter pelo menos 5 caracteres alfanuméricos",
             )
-            for process_code, download_url in download_buttons:
-                col2.link_button(
-                    url=download_url,
-                    label=f"Baixar arquivos - Processo {process_code}",
-                    disabled=st.session_state.running,
-                )
+            process_codes.append(code)
+
+        submit_button = st.form_submit_button("Enviar")
+
+    # Status containers
+    status_container = st.container()
+    progress_container = st.container()
+    download_container = st.container()
+
+    if submit_button:
+        # Validate inputs
+        validation_errors = []
+        if not validate_email(email):
+            validation_errors.append("Email inválido")
+        if not login:
+            validation_errors.append("Login é obrigatório")
+        if not password:
+            validation_errors.append("Senha é obrigatória")
+
+        valid_codes = [
+            code for code in process_codes if code and validate_process_code(code)
+        ]
+        if not valid_codes:
+            validation_errors.append("Forneça pelo menos um código de processo válido")
+
+        if validation_errors:
+            for error in validation_errors:
+                st.error(error)
         else:
-            alert_temporary_message.error(
-                "Erro ao processar os documentos. Tente novamente!"
-            )
+            # Save form data for persistence
+            st.session_state.form_data = {
+                "email": email,
+                "login": login,
+                "process_codes": process_codes,
+            }
 
-        info_temporary_message.empty()
-        st.session_state.processed_codes = []
-        st.session_state.running = False
+            with status_container:
+                st.info("🔄 Iniciando processamento dos documentos...")
 
-    if col1.button(
-        label="Enviar", disabled=st.session_state.running, key="submit_button"
-    ):
-        if email and login and password and any(process_codes):
-            # Filter out empty process codes
-            valid_process_codes = [code for code in process_codes if code]
+            progress_bar = progress_container.progress(0)
+            progress_text = progress_container.empty()
 
-            if not valid_process_codes:
-                alert_temporary_message.warning(
-                    "Digite pelo menos um código de processo!"
-                )
-                return
-
-            info_temporary_message.info(
-                "Estamos processando os documentos e isso pode demorar um pouco. Aguarde na página!"
-            )
-
-            # Process all codes in parallel using ThreadPoolExecutor
+            # Process codes in parallel
             successful_codes = []
+            total_codes = len(valid_codes)
+
             with ThreadPoolExecutor(max_workers=5) as executor:
-                future_to_code = {
+                futures = {
                     executor.submit(
                         process_single_code, email, login, password, code
                     ): code
-                    for code in valid_process_codes
+                    for code in valid_codes
                 }
 
-                for future in as_completed(future_to_code):
-                    code = future_to_code[future]
+                for idx, future in enumerate(as_completed(futures)):
+                    code = futures[future]
                     try:
-                        response_body = future.result()
-                        if response_body and response_body["statusCode"] == 200:
+                        _, response = future.result()
+                        if response["statusCode"] == 200:
                             successful_codes.append(code)
+                            st.toast(
+                                f"✅ Processo {code} concluído com sucesso!", icon="✅"
+                            )
+                        else:
+                            st.toast(f"❌ Erro ao processar processo {code}", icon="❌")
                     except Exception as e:
-                        print(f"Error processing code {code}: {e}")
+                        st.toast(
+                            f"❌ Erro ao processar processo {code}: {str(e)}", icon="❌"
+                        )
 
+                    # Update progress
+                    progress = (idx + 1) / total_codes
+                    progress_bar.progress(progress)
+                    progress_text.text(
+                        f"Processados {idx + 1} de {total_codes} processo(s)"
+                    )
+
+            # Final status update
+            progress_bar.empty()
             if successful_codes:
-                st.session_state.processed_codes = successful_codes
-                st.rerun()
-            else:
-                alert_temporary_message.warning(
-                    "Houve um erro ao submeter os dados. Tente novamente."
+                status_container.success(
+                    f"✅ {len(successful_codes)} processo(s) concluído(s) com sucesso!"
                 )
-                info_temporary_message.empty()
 
-            st.session_state.running = False
+                # Generate download links
+                with download_container:
+                    st.subheader("Downloads disponíveis")
+                    for code in successful_codes:
+                        download_url, error = zip_s3_bucket_contents(code)
+                        if download_url:
+                            st.link_button(
+                                f"📥 Baixar arquivos - Processo {code}",
+                                url=download_url,
+                            )
+                        else:
+                            st.error(
+                                f"Erro ao gerar link para processo {code}: {error}"
+                            )
 
-        else:
-            alert_temporary_message.warning(
-                "Preencha as credenciais e pelo menos um código de processo!"
-            )
+                # Add to processing history
+                st.session_state.processing_history.append(
+                    {
+                        "timestamp": st.session_state.get("current_time", ""),
+                        "successful": len(successful_codes),
+                        "failed": len(valid_codes) - len(successful_codes),
+                    }
+                )
+            else:
+                status_container.error("❌ Nenhum processo foi concluído com sucesso")
+
+    # Show processing history in an expandable section
+    if st.session_state.processing_history:
+        with st.expander("📊 Histórico de Processamento"):
+            history_df = pd.DataFrame(st.session_state.processing_history)
+            st.dataframe(history_df)
+
+
+def main():
+    run()
+
+
+if __name__ == "__main__":
+    main()
