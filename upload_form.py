@@ -299,7 +299,6 @@ def run():
                             _, response = future.result()
                             if response["statusCode"] == 200:
                                 successful_codes.append(code)
-                                st.balloons()
                                 st.toast(f"✅ Processo {code} concluído!", icon="✅")
                             else:
                                 st.toast(f"❌ Erro: Processo {code}", icon="❌")
@@ -351,7 +350,7 @@ def run():
                 # Update session state with processing history
                 st.session_state.processing_history.append(
                     {
-                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "timestamp": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
                         "successful": len(successful_codes),
                         "failed": len(valid_codes) - len(successful_codes),
                         "total_time": f"{processing_time:.1f} min",
