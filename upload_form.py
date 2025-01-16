@@ -235,6 +235,9 @@ def run():
     download_container = st.container()
 
     if submit_button:
+        # Start timing the process
+        start_time = datetime.now()
+
         # Validate inputs
         validation_errors = []
 
@@ -325,40 +328,61 @@ def run():
                     st.subheader("📥 Downloads Disponíveis")
                     for code in successful_codes:
                         st.markdown(f"**Processo:** {code}")
-                        with st.status("Preparando download...") as status:
-                            st.write("⏳ Compactando arquivos...")
-                            download_url, error = zip_s3_bucket_contents(code)
-                            if download_url:
-                                status.update(
-                                    label="Download pronto!", state="complete"
-                                )
+                        st.write("⏳ Compactando arquivos...")
+                        download_url, error = zip_s3_bucket_contents(code)
+                        if download_url:
+                            st.success("✅ Download pronto!")
+                            col1, col2 = st.columns([3, 1])
+                            with col2:
                                 st.link_button(
                                     "📥 Download",
                                     url=download_url,
                                 )
-                                st.toast(f"✅ Download pronto para {code}!", icon="✅")
-                            else:
-                                status.update(label="Erro no download", state="error")
-                                st.error(f"❌ Erro no download: {error}")
+                            st.toast(f"✅ Download pronto para {code}!", icon="✅")
+                        else:
+                            st.error(f"❌ Erro no download: {error}")
 
-                # Add to processing history with timestamp
+                # Calculate processing time at the end
+                end_time = datetime.now()
+                processing_time = (
+                    end_time - start_time
+                ).total_seconds() / 60  # Convert to minutes
+
+                # Update session state with processing history
                 st.session_state.processing_history.append(
                     {
                         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         "successful": len(successful_codes),
                         "failed": len(valid_codes) - len(successful_codes),
-                        "total_time": "2.5 min",  # You could calculate actual time
+                        "total_time": f"{processing_time:.1f} min",
                     }
                 )
             else:
                 status_container.error("❌ Nenhum processo foi concluído")
 
-    # Enhanced processing history
+    # Enhanced processing history with median calculation
     if st.session_state.processing_history:
         with st.expander("📊 Histórico de Processamento"):
             history_df = pd.DataFrame(st.session_state.processing_history)
+
+            # Convert total_time strings to numeric values for median calculation
+            history_df["processing_minutes"] = (
+                history_df["total_time"].str.extract("(\d+\.?\d*)").astype(float)
+            )
+
+            # Calculate median processing time
+            median_time = history_df["processing_minutes"].median()
+
+            # Display statistics
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Tempo Médio de Processamento", f"{median_time:.1f} min")
+            with col2:
+                st.metric("Total de Lotes Processados", len(history_df))
+
+            # Display history table
             st.dataframe(
-                history_df,
+                history_df.drop("processing_minutes", axis=1),
                 column_config={
                     "timestamp": "Data/Hora",
                     "successful": "Sucesso",
