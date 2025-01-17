@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 import boto3
 import pandas as pd
@@ -14,12 +14,6 @@ from botocore.config import Config
 from decouple import config
 
 from generate_pre_signed_url import zip_s3_bucket_contents
-
-SMTP_SERVER = config("SMTP_SERVER")
-SMTP_PORT = config("SMTP_PORT")
-SMTP_USERNAME = config("SMTP_USERNAME")
-SMTP_PASSWORD = config("SMTP_PASSWORD")
-SENDER_EMAIL = config("SENDER_EMAIL")
 
 # Page config for a cleaner look
 st.set_page_config(
@@ -63,42 +57,12 @@ lambda_client = boto3.client(
 )
 AWS_LAMBDA_NAME = config("AWS_LAMBDA_NAME")
 
-
-def send_download_email(
-    recipient_email: str, process_code: str, download_url: str
-) -> bool:
-    """Send email with pre-signed URL to the user."""
-    try:
-        msg = MIMEMultipart()
-        msg["From"] = SENDER_EMAIL
-        msg["To"] = recipient_email
-        msg["Subject"] = f"Download Link para Processo {process_code}"
-
-        body = f"""
-        Olá,
-
-        O seu processo {process_code} está pronto para download.
-        Por favor, utilize o link abaixo para baixar os documentos:
-
-        {download_url}
-
-        Este link expirará em 24 horas.
-
-        Atenciosamente,
-        AutoBMG Processos
-        """
-
-        msg.attach(MIMEText(body, "plain"))
-
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
-            server.starttls()
-            server.login(SMTP_USERNAME, SMTP_PASSWORD)
-            server.send_message(msg)
-
-        return True
-    except Exception as e:
-        st.error(f"Erro ao enviar email: {str(e)}")
-        return False
+# Email configuration
+SMTP_SERVER = config("SMTP_SERVER")
+SMTP_PORT = config("SMTP_PORT")
+SMTP_USERNAME = config("SMTP_USERNAME")
+SMTP_PASSWORD = config("SMTP_PASSWORD")
+SENDER_EMAIL = config("SENDER_EMAIL")
 
 
 def validate_email(email: str) -> bool:
@@ -137,41 +101,97 @@ def invoke_lambda(event_payload: dict) -> dict:
         return {"statusCode": 500, "body": str(e)}
 
 
-def create_download_button(url: str, code: str):
-    """Create a download button that opens in a new tab without page reload."""
-    button_id = f"download_button_{code}"
-    st.markdown(
-        f"""
-        <a href="{url}" target="_blank">
-            <button id="{button_id}" style="
-                width: 100%;
-                border-radius: 5px;
-                height: 3em;
-                background-color: #FF4B4B;
-                color: white;
-                font-weight: bold;
-                border: none;
-                cursor: pointer;">
-                📥 Download
-            </button>
-        </a>
-        """,
-        unsafe_allow_html=True,
-    )
+def send_download_email(
+    recipient_email: str, process_code: str, download_url: str
+) -> bool:
+    """Send email with pre-signed URL to the user."""
+    try:
+        msg = MIMEMultipart()
+        msg["From"] = SENDER_EMAIL
+        msg["To"] = recipient_email
+        msg["Subject"] = f"Download Link para Processo {process_code}"
+
+        # Use HTML body with hyperlink
+        body = f"""
+        <html>
+        <body>
+            <p>Olá,</p>
+            <p>O seu processo <strong>{process_code}</strong> está pronto para download.<br>
+            Por favor, <a href="{download_url}" target="_blank">clique aqui</a> para baixar os documentos.</p>
+            <p>Este link expirará em 24 horas.</p>
+            <p>Atenciosamente,<br>
+            AutoBMG Processos</p>
+        </body>
+        </html>
+        """
+
+        msg.attach(MIMEText(body, "html"))
+
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.starttls()
+            server.login(SMTP_USERNAME, SMTP_PASSWORD)
+            server.send_message(msg)
+
+        return True
+    except Exception as e:
+        print(
+            f"Erro ao enviar email: {str(e)}"
+        )  # Replace with proper logging in production
+        return False
 
 
-def process_single_code(
+def process_and_send_email(
     email: str, login: str, password: str, process_code: str
-) -> Tuple[str, dict]:
-    """Process a single code with progress tracking."""
-    event_payload = {
-        "email": email,
-        "login": login,
-        "password": password,
-        "process_code": process_code,
-        "timestamp": datetime.now().isoformat(),
-    }
-    return process_code, invoke_lambda(event_payload)
+) -> Dict[str, any]:
+    """Process a single code and send email immediately upon completion."""
+    try:
+        # Invoke Lambda
+        event_payload = {
+            "email": email,
+            "login": login,
+            "password": password,
+            "process_code": process_code,
+            "timestamp": datetime.now().isoformat(),
+        }
+
+        response = invoke_lambda(event_payload)
+
+        if response["statusCode"] == 200:
+            # Generate download URL
+            download_url, error = zip_s3_bucket_contents(process_code)
+
+            if download_url:
+                # Send email immediately
+                email_sent = send_download_email(email, process_code, download_url)
+
+                return {
+                    "code": process_code,
+                    "success": True,
+                    "email_sent": email_sent,
+                    "error": None,
+                }
+            else:
+                return {
+                    "code": process_code,
+                    "success": True,
+                    "email_sent": False,
+                    "error": f"Erro ao gerar URL: {error}",
+                }
+        else:
+            return {
+                "code": process_code,
+                "success": False,
+                "email_sent": False,
+                "error": f"Erro no processamento: {response.get('body', 'Unknown error')}",
+            }
+
+    except Exception as e:
+        return {
+            "code": process_code,
+            "success": False,
+            "email_sent": False,
+            "error": str(e),
+        }
 
 
 def initialize_session_state():
@@ -189,6 +209,8 @@ def initialize_session_state():
         st.session_state.success_count = 0
     if "total_processed" not in st.session_state:
         st.session_state.total_processed = 0
+    if "processing_results" not in st.session_state:
+        st.session_state.processing_results = []
 
 
 def run():
@@ -248,7 +270,7 @@ def run():
         1. 📝 Preencha suas credenciais na barra lateral
         2. 📎 Digite de 1 a 5 códigos de processo
         3. 🚀 Clique em 'Processar' para iniciar
-        4. 📥 Baixe os arquivos processados
+        4. 📧 Aguarde o email com o link para download
         
         **Observação:** Você pode deixar campos vazios, mas precisa fornecer pelo menos um código válido.
         """
@@ -301,7 +323,6 @@ def run():
     # Status containers
     status_container = st.container()
     progress_container = st.container()
-    download_container = st.container()
 
     if submit_button:
         # Start timing the process
@@ -346,70 +367,86 @@ def run():
             with status_container:
                 st.info("🔄 Iniciando processamento dos documentos...")
 
-            progress_bar = progress_container.progress(0)
-            progress_text = progress_container.empty()
+            progress_placeholder = st.empty()
+            progress_text = st.empty()
 
-            # Process codes in parallel with enhanced progress tracking
+            # Process codes in parallel
             successful_codes = []
+            failed_codes = []
             total_codes = len(valid_codes)
 
             with st.spinner("Processando..."):
+                # Create a list to store all futures
+                futures = []
+
                 with ThreadPoolExecutor(max_workers=5) as executor:
-                    futures = {
-                        executor.submit(
-                            process_single_code, email, login, password, code
-                        ): code
-                        for code in valid_codes
-                    }
-
-                    for idx, future in enumerate(as_completed(futures)):
-                        code = futures[future]
-                        try:
-                            _, response = future.result()
-                            if response["statusCode"] == 200:
-                                successful_codes.append(code)
-                                st.toast(f"✅ Processo {code} concluído!", icon="✅")
-                            else:
-                                st.toast(f"❌ Erro: Processo {code}", icon="❌")
-                        except Exception as e:
-                            st.toast(f"❌ Erro: {code} - {str(e)}", icon="❌")
-
-                        progress = (idx + 1) / total_codes
-                        progress_bar.progress(
-                            progress, f"Processando {idx + 1}/{total_codes}"
+                    # Submit all tasks
+                    for code in valid_codes:
+                        future = executor.submit(
+                            process_and_send_email, email, login, password, code
                         )
+                        futures.append(future)
+
+                    # Process results as they complete
+                    for idx, future in enumerate(as_completed(futures), 1):
+                        result = future.result()
+                        code = result["code"]
+
+                        # Update progress
+                        progress = idx / total_codes
+                        progress_placeholder.progress(progress)
                         progress_text.markdown(
-                            f"⏳ **Progresso:** {idx + 1}/{total_codes} processos"
+                            f"⏳ **Progresso:** {idx}/{total_codes} processos"
                         )
+
+                        if result["success"]:
+                            successful_codes.append(code)
+                            if result["email_sent"]:
+                                st.toast(
+                                    f"✅ Processo {code} concluído e email enviado!",
+                                    icon="✅",
+                                )
+                            else:
+                                st.toast(
+                                    f"⚠️ Processo {code} concluído, mas erro ao enviar email: {result['error']}",
+                                    icon="⚠️",
+                                )
+                        else:
+                            failed_codes.append(code)
+                            st.toast(
+                                f"❌ Erro no processo {code}: {result['error']}",
+                                icon="❌",
+                            )
 
             # Update statistics
             st.session_state.success_count += len(successful_codes)
             st.session_state.total_processed += total_codes
 
+            # Calculate processing time
+            end_time = datetime.now()
+            processing_time = (end_time - start_time).total_seconds() / 60
+
+            # Final status update
             if successful_codes:
                 status_container.success(
                     f"✅ {len(successful_codes)}/{total_codes} processo(s) concluído(s)!"
                 )
+                if failed_codes:
+                    status_container.warning(
+                        f"⚠️ {len(failed_codes)} processo(s) falharam: {', '.join(failed_codes)}"
+                    )
+            else:
+                status_container.error("❌ Nenhum processo foi concluído")
 
-                # Send download links via email
-                with st.spinner("📧 Enviando links por email..."):
-                    for code in successful_codes:
-                        download_url, error = zip_s3_bucket_contents(code)
-
-                        if download_url:
-                            if send_download_email(email, code, download_url):
-                                st.toast(
-                                    f"✅ Link de download enviado por email para {code}!",
-                                    icon="✅",
-                                )
-                            else:
-                                st.error(f"❌ Erro ao enviar email para {code}")
-                        else:
-                            st.error(f"❌ Erro ao gerar link para {code}")
-                            if error:
-                                st.caption(f"Erro: {error}")
-
-                st.success(f"📧 Links de download foram enviados para {email}")
+            # Update processing history
+            st.session_state.processing_history.append(
+                {
+                    "timestamp": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+                    "successful": len(successful_codes),
+                    "failed": len(failed_codes),
+                    "total_time": f"{processing_time:.1f} min",
+                }
+            )
 
     # Enhanced processing history with median calculation
     if st.session_state.processing_history:
