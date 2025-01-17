@@ -322,24 +322,37 @@ def run():
                     f"✅ {len(successful_codes)}/{total_codes} processo(s) concluído(s)!"
                 )
 
-                # Generate download links with enhanced UI
+                # Generate download links with improved UI
                 with download_container:
                     st.subheader("📥 Downloads Disponíveis")
-                    for code in successful_codes:
-                        st.markdown(f"**Processo:** {code}")
-                        st.write("⏳ Compactando arquivos...")
-                        download_url, error = zip_s3_bucket_contents(code)
-                        if download_url:
-                            st.success("✅ Download pronto!")
-                            col1, col2 = st.columns([3, 1])
-                            with col2:
-                                st.link_button(
-                                    "📥 Download",
-                                    url=download_url,
-                                )
-                            st.toast(f"✅ Download pronto para {code}!", icon="✅")
-                        else:
-                            st.error(f"❌ Erro no download: {error}")
+
+                    # Create a grid layout for downloads
+                    cols = st.columns(3)
+                    for idx, code in enumerate(successful_codes):
+                        with cols[idx % 3]:
+                            with st.container():
+                                st.markdown(f"**{code}**")
+                                with st.spinner("⏳ Compactando..."):
+                                    download_url, error = zip_s3_bucket_contents(code)
+
+                                if download_url:
+                                    st.button(
+                                        "📥 Download",
+                                        key=f"download_{code}",
+                                        use_container_width=True,
+                                        type="primary",
+                                        on_click=lambda url=download_url: st.markdown(
+                                            f'<script>window.location.href = "{url}";</script>',
+                                            unsafe_allow_html=True,
+                                        ),
+                                    )
+                                    st.toast(
+                                        f"✅ Download pronto para {code}!", icon="✅"
+                                    )
+                                else:
+                                    st.error("❌ Erro no download")
+                                    if error:
+                                        st.caption(f"Erro: {error}")
 
                 # Calculate processing time at the end
                 end_time = datetime.now()
