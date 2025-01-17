@@ -1,7 +1,10 @@
 import json
 import re
+import smtplib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from typing import List, Tuple
 
 import boto3
@@ -11,6 +14,12 @@ from botocore.config import Config
 from decouple import config
 
 from generate_pre_signed_url import zip_s3_bucket_contents
+
+SMTP_SERVER = config("SMTP_SERVER")
+SMTP_PORT = config("SMTP_PORT")
+SMTP_USERNAME = config("SMTP_USERNAME")
+SMTP_PASSWORD = config("SMTP_PASSWORD")
+SENDER_EMAIL = config("SENDER_EMAIL")
 
 # Page config for a cleaner look
 st.set_page_config(
@@ -55,6 +64,43 @@ lambda_client = boto3.client(
 AWS_LAMBDA_NAME = config("AWS_LAMBDA_NAME")
 
 
+def send_download_email(
+    recipient_email: str, process_code: str, download_url: str
+) -> bool:
+    """Send email with pre-signed URL to the user."""
+    try:
+        msg = MIMEMultipart()
+        msg["From"] = SENDER_EMAIL
+        msg["To"] = recipient_email
+        msg["Subject"] = f"Download Link para Processo {process_code}"
+
+        body = f"""
+        Olá,
+
+        O seu processo {process_code} está pronto para download.
+        Por favor, utilize o link abaixo para baixar os documentos:
+
+        {download_url}
+
+        Este link expirará em 24 horas.
+
+        Atenciosamente,
+        AutoBMG Processos
+        """
+
+        msg.attach(MIMEText(body, "plain"))
+
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.starttls()
+            server.login(SMTP_USERNAME, SMTP_PASSWORD)
+            server.send_message(msg)
+
+        return True
+    except Exception as e:
+        st.error(f"Erro ao enviar email: {str(e)}")
+        return False
+
+
 def validate_email(email: str) -> bool:
     """Validate email format."""
     pattern = r"^[\w\.-]+@[\w\.-]+\.\w+$"
@@ -89,6 +135,29 @@ def invoke_lambda(event_payload: dict) -> dict:
     except Exception as e:
         st.error(f"Erro ao invocar Lambda: {str(e)}")
         return {"statusCode": 500, "body": str(e)}
+
+
+def create_download_button(url: str, code: str):
+    """Create a download button that opens in a new tab without page reload."""
+    button_id = f"download_button_{code}"
+    st.markdown(
+        f"""
+        <a href="{url}" target="_blank">
+            <button id="{button_id}" style="
+                width: 100%;
+                border-radius: 5px;
+                height: 3em;
+                background-color: #FF4B4B;
+                color: white;
+                font-weight: bold;
+                border: none;
+                cursor: pointer;">
+                📥 Download
+            </button>
+        </a>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def process_single_code(
@@ -322,55 +391,25 @@ def run():
                     f"✅ {len(successful_codes)}/{total_codes} processo(s) concluído(s)!"
                 )
 
-                # Generate download links with improved UI
-                with download_container:
-                    st.subheader("📥 Downloads Disponíveis")
+                # Send download links via email
+                with st.spinner("📧 Enviando links por email..."):
+                    for code in successful_codes:
+                        download_url, error = zip_s3_bucket_contents(code)
 
-                    # Create a grid layout for downloads
-                    cols = st.columns(3)
-                    for idx, code in enumerate(successful_codes):
-                        with cols[idx % 3]:
-                            with st.container():
-                                st.markdown(f"**{code}**")
-                                with st.spinner("⏳ Compactando..."):
-                                    download_url, error = zip_s3_bucket_contents(code)
+                        if download_url:
+                            if send_download_email(email, code, download_url):
+                                st.toast(
+                                    f"✅ Link de download enviado por email para {code}!",
+                                    icon="✅",
+                                )
+                            else:
+                                st.error(f"❌ Erro ao enviar email para {code}")
+                        else:
+                            st.error(f"❌ Erro ao gerar link para {code}")
+                            if error:
+                                st.caption(f"Erro: {error}")
 
-                                if download_url:
-                                    st.button(
-                                        "📥 Download",
-                                        key=f"download_{code}",
-                                        use_container_width=True,
-                                        type="primary",
-                                        on_click=lambda url=download_url: st.markdown(
-                                            f'<script>window.location.href = "{url}";</script>',
-                                            unsafe_allow_html=True,
-                                        ),
-                                    )
-                                    st.toast(
-                                        f"✅ Download pronto para {code}!", icon="✅"
-                                    )
-                                else:
-                                    st.error("❌ Erro no download")
-                                    if error:
-                                        st.caption(f"Erro: {error}")
-
-                # Calculate processing time at the end
-                end_time = datetime.now()
-                processing_time = (
-                    end_time - start_time
-                ).total_seconds() / 60  # Convert to minutes
-
-                # Update session state with processing history
-                st.session_state.processing_history.append(
-                    {
-                        "timestamp": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
-                        "successful": len(successful_codes),
-                        "failed": len(valid_codes) - len(successful_codes),
-                        "total_time": f"{processing_time:.1f} min",
-                    }
-                )
-            else:
-                status_container.error("❌ Nenhum processo foi concluído")
+                st.success(f"📧 Links de download foram enviados para {email}")
 
     # Enhanced processing history with median calculation
     if st.session_state.processing_history:
